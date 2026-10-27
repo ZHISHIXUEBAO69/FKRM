@@ -2,56 +2,75 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>暴击大黄狗 · 试玩版</title>
 <style>
   html, body {
-    margin: 0; padding: 0; height: 100%;
+    margin: 0; padding: 0; width: 100%; height: 100%;
     background: #14301a; overflow: hidden;
     touch-action: none;
     -webkit-user-select: none; user-select: none;
     -webkit-tap-highlight-color: transparent;
   }
-  canvas { display: block; }
+  /* 画布用 CSS 撑满视口：即使 JS 尺寸测量有偏差，画面也一定铺满全屏 */
+  #game {
+    position: fixed; left: 0; top: 0;
+    width: 100%; height: 100%;
+    display: block;
+  }
   #tip {
-    position: fixed; left: 0; right: 0; bottom: 10px;
+    position: fixed; left: 0; right: 0; bottom: 8px;
     text-align: center; color: rgba(255,255,255,0.45);
-    font: 13px/1.5 sans-serif; pointer-events: none;
+    font: 12px/1.5 sans-serif; pointer-events: none;
+    z-index: 2;
   }
 </style>
 </head>
 <body>
-<div id="tip">试玩版 · 与微信小游戏共用同一套核心代码 · 点击屏幕出脚</div>
+<canvas id="game"></canvas>
+<div id="tip">试玩版 · 点击屏幕出脚</div>
 
 <script src="./src/storage.js"></script>
 <script src="./src/audio.js"></script>
 <script src="./src/core.js"></script>
 <script>
 (function () {
-  var dpr = Math.min(window.devicePixelRatio || 1, 2);
-  var canvas = document.createElement('canvas');
-  document.body.appendChild(canvas);
+  var canvas = document.getElementById('game');
   var ctx = canvas.getContext('2d');
 
-  function resize() {
-    var w = window.innerWidth, h = window.innerHeight;
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
+  /* ---------- 尺寸测量：优先 CSS 实际布局尺寸（微信 webview 的 innerWidth 常报错） ---------- */
+  function measure() {
+    var r = canvas.getBoundingClientRect();
+    var w = Math.round(r.width);
+    var h = Math.round(r.height);
+    if (!w || !h) {
+      var doc = document.documentElement;
+      w = w || doc.clientWidth || window.innerWidth || 375;
+      h = h || doc.clientHeight || window.innerHeight || 667;
+    }
     return { w: w, h: h };
   }
-  var size = resize();
+  function pixelRatio() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var s = measure();
+    // 限制总像素量，避免大屏/高 dpr 设备内存爆掉
+    var maxPx = 2200000;
+    if (s.w * s.h * dpr * dpr > maxPx) dpr = Math.sqrt(maxPx / (s.w * s.h));
+    return Math.max(dpr, 0.75);
+  }
+
+  var size = measure();
+  var dpr = pixelRatio();
 
   var audio = BaojiAudio.create();
 
-  /* 图片素材：浏览器 canvas 支持 drawImage，直接本地加载 */
+  /* ---------- 图片素材：加载完成后才交给 core 绘制（未完成时回退代码绘制） ---------- */
   var imgCache = {};
   function loadImg(src) {
     if (!src || imgCache[src]) return;
     var img = new Image();
     img.src = src;
-    imgCache[src] = img;   // 加载完成前 drawImage 静默跳过，完成后自动上屏
+    imgCache[src] = img;
   }
   loadImg(BaojiDog.CONFIG.assets.bg);
   BaojiDog.CONFIG.assets.levels.forEach(function (e) { loadImg(e.src); });
@@ -65,7 +84,11 @@
     audio: audio,
     storage: BaojiStore,
     canDrawImage: true,
-    getImage: function (src) { return imgCache[src] || null; },
+    getImage: function (src) {
+      var img = imgCache[src];
+      // 只在真正解码完成后返回，否则 core 会画一张空白图（狗会消失）
+      return (img && img.complete && img.naturalWidth > 0) ? img : null;
+    },
     onTap: function (cb) {
       function down(e) {
         cb();
@@ -89,10 +112,22 @@
       });
     },
     onResize: function (cb) {
-      window.addEventListener('resize', function () {
-        var s = resize();
+      var lastW = 0, lastH = 0;
+      function sync() {
+        var s = measure();
+        if (s.w === lastW && s.h === lastH) return;
+        lastW = s.w; lastH = s.h;
         cb(s.w, s.h);
+      }
+      // 微信内置浏览器首屏尺寸常报错：多次延迟重测 + 监听变化
+      window.addEventListener('resize', sync);
+      window.addEventListener('orientationchange', function () { setTimeout(sync, 200); });
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) setTimeout(sync, 200);
       });
+      [0, 120, 350, 800, 1500, 3000].forEach(function (ms) { setTimeout(sync, ms); });
+      setInterval(sync, 1200);
+      sync();
     }
   });
 })();
