@@ -1610,6 +1610,7 @@
       ctx.textBaseline = 'alphabetic';
     }
     function ctaText(y, text) {
+      ctx.textAlign = 'center';   // 复位对齐：调用方（关卡卡等）可能把 textAlign 改成过 left/right
       ctx.globalAlpha = 0.6 + 0.4 * Math.sin(S.now / 300);
       ctx.font = 'bold 42px sans-serif';
       ctx.fillStyle = '#ffffff';
@@ -1617,6 +1618,7 @@
       ctx.globalAlpha = 1;
     }
     function drawCompliance(y) {
+      ctx.textAlign = 'center';   // 同样复位对齐，避免被前面的右对齐污染
       ctx.font = '20px sans-serif';
       ctx.fillStyle = 'rgba(255,255,255,0.55)';
       ctx.fillText('抵制不良游戏，拒绝盗版游戏。注意自我保护，谨防受骗。', DW / 2, y);
@@ -1693,6 +1695,7 @@
 
       ctaText(DH * 0.37 + 3 * (cardH + gap) + 56, '点击屏幕  开始游戏');
 
+      ctx.textAlign = 'center';   // 卡片循环里改过 left/right，这里复位
       ctx.font = '24px sans-serif';
       ctx.fillStyle = 'rgba(255,255,255,0.85)';
       ctx.fillText('点击出脚 · 连击提升伤害 · 狗仔会闪避', DW / 2, DH * 0.82);
