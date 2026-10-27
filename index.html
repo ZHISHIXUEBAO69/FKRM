@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>暴击大黄狗 · 试玩版</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #14301a; overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; }
+  #tip {
+    position: fixed; left: 0; right: 0; bottom: 10px;
+    text-align: center; color: rgba(255,255,255,0.45);
+    font: 13px/1.5 sans-serif; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="tip">试玩版 · 与微信小游戏共用同一套核心代码 · 点击屏幕出脚</div>
+
+<script src="./src/storage.js"></script>
+<script src="./src/audio.js"></script>
+<script src="./src/core.js"></script>
+<script>
+(function () {
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var canvas = document.createElement('canvas');
+  document.body.appendChild(canvas);
+  var ctx = canvas.getContext('2d');
+
+  function resize() {
+    var w = window.innerWidth, h = window.innerHeight;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
+    return { w: w, h: h };
+  }
+  var size = resize();
+
+  var audio = BaojiAudio.create();
+
+  /* 图片素材：浏览器 canvas 支持 drawImage，直接本地加载 */
+  var imgCache = {};
+  function loadImg(src) {
+    if (!src || imgCache[src]) return;
+    var img = new Image();
+    img.src = src;
+    imgCache[src] = img;   // 加载完成前 drawImage 静默跳过，完成后自动上屏
+  }
+  loadImg(BaojiDog.CONFIG.assets.bg);
+  BaojiDog.CONFIG.assets.levels.forEach(function (e) { loadImg(e.src); });
+
+  BaojiDog.launch({
+    canvas: canvas,
+    ctx: ctx,
+    width: size.w,
+    height: size.h,
+    dpr: dpr,
+    audio: audio,
+    storage: BaojiStore,
+    canDrawImage: true,
+    getImage: function (src) { return imgCache[src] || null; },
+    onTap: function (cb) {
+      function down(e) {
+        cb();
+        if (e && e.preventDefault) e.preventDefault();
+      }
+      if (window.PointerEvent) {
+        canvas.addEventListener('pointerdown', down);
+      } else {
+        canvas.addEventListener('touchstart', down, { passive: false });
+        canvas.addEventListener('mousedown', down);
+      }
+    },
+    onHide: function (cb) {
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) cb();
+      });
+    },
+    onShow: function (cb) {
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) cb();
+      });
+    },
+    onResize: function (cb) {
+      window.addEventListener('resize', function () {
+        var s = resize();
+        cb(s.w, s.h);
+      });
+    }
+  });
+})();
+</script>
+</body>
+</html>
