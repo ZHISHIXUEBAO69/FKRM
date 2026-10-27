@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>暴击大黄狗 · 试玩版</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #14301a; overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* 画布用 CSS 强制撑满视口：即使 JS 尺寸测量有偏差，画面也一定铺满全屏 */
+  #game {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #14301a;
+  }
+  #tip {
+    position: fixed; left: 0; right: 0; bottom: 8px;
+    text-align: center; color: rgba(255,255,255,0.4);
+    font: 12px/1.5 sans-serif; pointer-events: none;
+    z-index: 2;
+  }
+  /* 调试信息：排查尺寸问题时看这里 */
+  #dbg {
+    position: fixed; left: 4px; top: 4px; z-index: 3;
+    color: #7cff6b; background: rgba(0,0,0,0.55);
+    font: 10px/1.4 monospace; padding: 3px 5px;
+    border-radius: 4px; pointer-events: none;
+    white-space: pre;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="dbg">init</div>
+<div id="tip">试玩版 · 点击屏幕出脚</div>
+
+<script src="./src/storage.js"></script>
+<script src="./src/audio.js"></script>
+<script src="./src/core.js"></script>
+<script>
+(function () {
+  var canvas = document.getElementById('game');
+  var dbgEl = document.getElementById('dbg');
+  var ctx = canvas.getContext('2d');
+
+  /* ---------- 尺寸测量：多来源取最大值，避免微信 webview 报错 ---------- */
+  function viewportSize() {
+    var doc = document.documentElement;
+    var vv = window.visualViewport || null;
+    var w = Math.max(
+      doc.clientWidth || 0,
+      window.innerWidth || 0,
+      vv ? Math.round(vv.width) : 0,
+      Math.round(document.body.getBoundingClientRect().width) || 0
+    );
+    var h = Math.max(
+      doc.clientHeight || 0,
+      window.innerHeight || 0,
+      vv ? Math.round(vv.height) : 0
+    );
+    if (w < 200) {
+      var sw = (window.screen && window.screen.width) ? window.screen.width : 375;
+      w = Math.round(sw / (window.devicePixelRatio || 1)) || 375;
+    }
+    if (h < 300) {
+      var sh = (window.screen && window.screen.height) ? window.screen.height : 667;
+      h = Math.round(sh / (window.devicePixelRatio || 1)) || 667;
+    }
+    return { w: w, h: h };
+  }
+
+  function pixelRatio(w, h) {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var maxPx = 2200000;
+    if (w * h * dpr * dpr > maxPx) dpr = Math.sqrt(maxPx / (w * h));
+    return Math.max(dpr, 0.75);
+  }
+
+  var size = viewportSize();
+  var dpr = pixelRatio(size.w, size.h);
+
+  function updateDbg(extra) {
+    var r = canvas.getBoundingClientRect();
+    dbgEl.textContent =
+      'win ' + window.innerWidth + 'x' + window.innerHeight +
+      '\ndoc ' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight +
+      '\ncss ' + Math.round(r.width) + 'x' + Math.round(r.height) +
+      '\nback ' + canvas.width + 'x' + canvas.height +
+      '\ndpr ' + (window.devicePixelRatio || 1).toFixed(2) +
+      (extra ? '\n' + extra : '');
+  }
+  updateDbg();
+
+  var audio = BaojiAudio.create();
+
+  /* ---------- 图片素材：解码完成才交给 core（未完成时回退代码绘制） ---------- */
+  var imgCache = {};
+  function loadImg(src) {
+    if (!src || imgCache[src]) return;
+    var img = new Image();
+    img.src = src;
+    imgCache[src] = img;
+  }
+  loadImg(BaojiDog.CONFIG.assets.bg);
+  BaojiDog.CONFIG.assets.levels.forEach(function (e) { loadImg(e.src); });
+
+  BaojiDog.launch({
+    canvas: canvas,
+    ctx: ctx,
+    width: size.w,
+    height: size.h,
+    dpr: dpr,
+    audio: audio,
+    storage: BaojiStore,
+    canDrawImage: true,
+    getImage: function (src) {
+      var img = imgCache[src];
+      return (img && img.complete && img.naturalWidth > 0) ? img : null;
+    },
+    onTap: function (cb) {
+      function down(e) {
+        cb();
+        if (e && e.preventDefault) e.preventDefault();
+      }
+      if (window.PointerEvent) {
+        canvas.addEventListener('pointerdown', down);
+      } else {
+        canvas.addEventListener('touchstart', down, { passive: false });
+        canvas.addEventListener('mousedown', down);
+      }
+    },
+    onHide: function (cb) {
+      document.addEventListener('visibilitychange', function () {
+        if (document.hidden) cb();
+      });
+    },
+    onShow: function (cb) {
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) cb();
+      });
+    },
+    onResize: function (cb) {
+      var lastW = 0, lastH = 0;
+      function sync() {
+        // 双保险：JS 也显式设置一遍 CSS 尺寸（应对个别环境忽略样式表）
+        var s = viewportSize();
+        canvas.style.width = s.w + 'px';
+        canvas.style.height = s.h + 'px';
+        canvas.style.position = 'fixed';
+        canvas.style.left = '0';
+        canvas.style.top = '0';
+        if (s.w === lastW && s.h === lastH) { updateDbg(); return; }
+        lastW = s.w; lastH = s.h;
+        cb(s.w, s.h);
+        updateDbg();
+      }
+      window.addEventListener('resize', sync);
+      window.addEventListener('orientationchange', function () { setTimeout(sync, 200); });
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) setTimeout(sync, 200);
+      });
+      // 微信 webview 首屏尺寸常报错：多次延迟重测 + 每秒兜底校验
+      [0, 100, 300, 700, 1500, 3000].forEach(function (ms) { setTimeout(sync, ms); });
+      setInterval(sync, 1000);
+      sync();
+    }
+  });
+})();
+</script>
+</body>
+</html>
