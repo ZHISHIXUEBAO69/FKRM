@@ -1,0 +1,2081 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>暴击大黄狗 · 试玩版</title>
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; background: #14301a; overflow: hidden;
+    touch-action: none; -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+  #game { position: fixed; left: 0; top: 0; width: 100%; height: 100%; display: block; background: #14301a; }
+  #tip { position: fixed; left: 0; right: 0; bottom: 8px; text-align: center; color: rgba(255,255,255,0.4);
+    font: 12px/1.5 sans-serif; pointer-events: none; z-index: 2; }
+  #dbg { display: none; position: fixed; left: 4px; top: 4px; z-index: 3; color: #7cff6b;
+    background: rgba(0,0,0,0.55); font: 10px/1.4 monospace; padding: 3px 5px; border-radius: 4px;
+    pointer-events: none; white-space: pre; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="dbg">init</div>
+<div id="tip">试玩版 · 点击屏幕出脚</div>
+<script>
+/* ---------- storage.js ---------- */
+/* ============================================================
+ * 本地存储：最高分持久化
+ * 微信（wx.setStorageSync）与浏览器（localStorage）双端可用
+ * ============================================================ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.BaojiStore = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  function get(key, dflt) {
+    try {
+      if (typeof wx !== 'undefined' && wx.getStorageSync) {
+        var v = wx.getStorageSync(key);
+        return (v === '' || v === undefined || v === null) ? dflt : v;
+      }
+      if (typeof localStorage !== 'undefined') {
+        var raw = localStorage.getItem(key);
+        return raw === null ? dflt : JSON.parse(raw);
+      }
+    } catch (e) {}
+    return dflt;
+  }
+
+  function set(key, val) {
+    try {
+      if (typeof wx !== 'undefined' && wx.setStorageSync) {
+        wx.setStorageSync(key, val);
+        return;
+      }
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(key, JSON.stringify(val));
+      }
+    } catch (e) {}
+  }
+
+  return { get: get, set: set };
+});
+
+</script>
+<script>
+/* ---------- audio.js ---------- */
+/* ============================================================
+ * 合成音效：不依赖任何音频素材文件
+ * 微信（wx.createWebAudioContext）与浏览器（AudioContext）双端可用
+ * ============================================================ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.BaojiAudio = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  function create() {
+    var ac = null;
+    var enabled = true;
+
+    function ctx() {
+      if (ac) return ac;
+      try {
+        if (typeof wx !== 'undefined' && wx.createWebAudioContext) {
+          ac = wx.createWebAudioContext();
+        } else if (typeof window !== 'undefined') {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          if (AC) ac = new AC();
+        }
+      } catch (e) {
+        ac = null;
+      }
+      return ac;
+    }
+
+    // 首次用户手势时调用，解锁音频上下文
+    function resume() {
+      var c = ctx();
+      if (c && c.resume) {
+        try { c.resume(); } catch (e) {}
+      }
+    }
+
+    function tone(freq, dur, type, vol, delay, slideTo) {
+      var c = ctx();
+      if (!c || !enabled) return;
+      try {
+        var t0 = c.currentTime + (delay || 0);
+        var o = c.createOscillator();
+        var g = c.createGain();
+        o.type = type || 'sine';
+        o.frequency.setValueAtTime(freq, t0);
+        if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(30, slideTo), t0 + dur);
+        g.gain.setValueAtTime(0.0001, t0);
+        g.gain.exponentialRampToValueAtTime(vol || 0.2, t0 + 0.012);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        o.connect(g);
+        g.connect(c.destination);
+        o.start(t0);
+        o.stop(t0 + dur + 0.02);
+      } catch (e) {}
+    }
+
+    function noise(dur, vol, delay, lowpass) {
+      var c = ctx();
+      if (!c || !enabled) return;
+      try {
+        var t0 = c.currentTime + (delay || 0);
+        var len = Math.max(1, Math.floor(c.sampleRate * dur));
+        var buf = c.createBuffer(1, len, c.sampleRate);
+        var data = buf.getChannelData(0);
+        for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+        var src = c.createBufferSource();
+        src.buffer = buf;
+        var g = c.createGain();
+        g.gain.setValueAtTime(vol || 0.3, t0);
+        g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+        var node = src;
+        if (lowpass) {
+          var f = c.createBiquadFilter();
+          f.type = 'lowpass';
+          f.frequency.value = lowpass;
+          src.connect(f);
+          node = f;
+        }
+        node.connect(g);
+        g.connect(c.destination);
+        src.start(t0);
+        src.stop(t0 + dur);
+      } catch (e) {}
+    }
+
+    var SFX = {
+      kick: function () {
+        noise(0.09, 0.5, 0, 900);
+        tone(140, 0.14, 'sine', 0.5, 0, 50);
+      },
+      crit: function () {
+        tone(660, 0.07, 'square', 0.2);
+        tone(880, 0.07, 'square', 0.2, 0.06);
+        tone(1320, 0.12, 'square', 0.24, 0.12);
+        noise(0.06, 0.25, 0, 2000);
+      },
+      mega: function () {
+        var notes = [523, 659, 784, 1046, 1318];
+        notes.forEach(function (f, i) { tone(f, 0.12, 'square', 0.18, i * 0.06); });
+        noise(0.12, 0.35, 0, 3000);
+      },
+      dodge: function () {
+        tone(700, 0.16, 'sawtooth', 0.12, 0, 180);
+      },
+      ko: function () {
+        var notes = [392, 523, 659, 784];
+        notes.forEach(function (f, i) { tone(f, 0.16, 'triangle', 0.24, i * 0.09); });
+      },
+      counter: function () {
+        // 被反咬：低沉咆哮 + 杂音
+        tone(120, 0.22, 'sawtooth', 0.3, 0, 60);
+        noise(0.14, 0.4, 0, 500);
+      },
+      levelclear: function () {
+        // 过关：上行琶音
+        var notes = [523, 659, 784, 1046];
+        notes.forEach(function (f, i) { tone(f, 0.14, 'triangle', 0.22, i * 0.08); });
+      },
+      tick: function () {
+        tone(1050, 0.05, 'square', 0.12);
+      },
+      start: function () {
+        tone(392, 0.08, 'triangle', 0.22);
+        tone(523, 0.08, 'triangle', 0.22, 0.08);
+        tone(659, 0.12, 'triangle', 0.22, 0.16);
+      }
+    };
+
+    return {
+      resume: resume,
+      setEnabled: function (v) { enabled = !!v; },
+      play: function (name) {
+        if (!enabled) return;
+        var fn = SFX[name];
+        if (!fn) return;
+        try {
+          resume();
+          fn();
+        } catch (e) {}
+      }
+    };
+  }
+
+  return { create: create };
+});
+
+</script>
+<script>
+/* ---------- core.js ---------- */
+/* ============================================================
+ * 暴击大黄狗 · 核心玩法（三关卡版）
+ * 纯 Canvas 2D 实现：不依赖 DOM / wx API，
+ * 微信小程序页面（pages/index）与浏览器试玩页（index.html）共用本文件。
+ * 平台能力通过 launch(platform) 注入。
+ *
+ * 角色设定：玩家操控人类球员（左侧），点击出脚踹向大黄狗（右侧目标）。
+ * 关卡结构：menu → levelIntro → play → levelClear → 下一关 / finalResult。
+ * 每一关的时长、血量、闪避率、KO 奖励、特殊机制都在 CONFIG.LEVELS 里配置，
+ * 换关卡内容只改配置，不用动逻辑。
+ * ============================================================ */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.BaojiDog = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /* ================= 可调参数（游戏性都集中在这里） ================= */
+  var CONFIG = {
+    designWidth: 750,        // 设计稿宽度（逻辑坐标）
+    playerName: '7号球员',   // 玩家操控的人类球员（原创卡通形象）
+    comboWindow: 1500,       // 连击窗口（毫秒），窗口内连续命中才计连击
+    comboBonusPer: 0.05,     // 每层连击的伤害加成
+    comboBonusCap: 20,       // 连击加成层数上限
+    critRate: 0.15,          // 暴击率
+    critMul: 3,              // 暴击倍率
+    megaRate: 0.02,          // 超级暴击率
+    megaMul: 10,             // 超级暴击倍率
+    dmgMin: 10,              // 单脚基础伤害下限
+    dmgMax: 16,              // 单脚基础伤害上限
+    koBonus: 150,            // KO 奖励分默认值（每关可覆盖）
+    jerseyMain: '#2f6fe0',   // 玩家球衣主色
+    jerseySub: '#e5484d',    // 玩家球衣辅色
+    earlyBonusPerSec: 10,    // 提前通关奖励：每剩余秒 X 分
+
+    /* ---------- 图片素材（加载失败自动回退代码绘制，不影响运行） ---------- */
+    assets: {
+      bg: 'assets/bg.jpg',                                   // 球场背景
+      levels: [                                              // 三关目标立绘（w/h 为图片像素尺寸）
+        { src: 'assets/lv1.png', w: 700, h: 538 },           // 第一关 · 桑斯
+        { src: 'assets/lv2.png', w: 700, h: 938 },           // 第二关 · 死人
+        { src: 'assets/lv3.png', w: 700, h: 538 }            // 第三关 · 法国黑龟
+      ]
+    },
+
+    /* ---------- 成就 ---------- */
+    achievements: {
+      dogmaster: { name: '打狗大师', desc: '三关全部打完', icon: '🏆' }
+    },
+
+    /* ---------- 三关卡配置：每一关都不一样 ----------
+     * name       关卡名（显示在关卡卡与 HUD）
+     * desc       关卡描述（显示在关卡卡）
+     * targetName 本关目标角色名（体力条标签）
+     * time       本关时长（秒）
+     * hp         目标体力
+     * dodgeBase  闪避率基础值 / dodgeGrowth 每 KO 一次增量 / dodgeMax 上限
+     * koBonus    本关 KO 奖励分
+     * koGoal     本关 KO 目标次数（达成即提前通关；null = 打满时间）
+     * mechanic   特殊机制：'sway' 目标左右横跳 | 'counter' 目标会反扑 | null 无
+     * mechanicTip 机制提示（显示在关卡卡）
+     */
+    LEVELS: [
+      {
+        name: '第一关 · 桑斯',
+        desc: '桑斯刚睡醒，反应慢吞吞，适合热身练脚法',
+        targetName: '桑斯',
+        time: 40,
+        hp: 80,
+        dodgeBase: 0.05, dodgeGrowth: 0.02, dodgeMax: 0.22,
+        koBonus: 100,
+        koGoal: 1,
+        mechanic: null,
+        mechanicTip: ''
+      },
+      {
+        name: '第二关 · 死人',
+        desc: '死人睡饱了开始左右横跳，抓准起脚时机',
+        targetName: '死人',
+        time: 45,
+        hp: 130,
+        dodgeBase: 0.12, dodgeGrowth: 0.02, dodgeMax: 0.30,
+        koBonus: 150,
+        koGoal: 2,
+        mechanic: 'sway',
+        mechanicTip: '死人会左右横跳，出脚注意提前量'
+      },
+      {
+        name: '第三关 · 法国黑龟',
+        desc: '被惹毛的法国黑龟会龇牙反咬，千万别在它发怒时出脚',
+        targetName: '法国黑龟',
+        time: 50,
+        hp: 180,
+        dodgeBase: 0.15, dodgeGrowth: 0.02, dodgeMax: 0.35,
+        koBonus: 200,
+        koGoal: 3,
+        mechanic: 'counter',
+        mechanicTip: '法国黑龟冒红光龇牙时别出脚！被反咬会断连击'
+      }
+    ]
+  };
+
+  /* ================= 工具函数 ================= */
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+  function easeOutBack(t) {
+    var c = 1.70158;
+    return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2);
+  }
+  function roundRectPath(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /* ================= 主入口 ================= */
+  function launch(platform) {
+    var ctx = platform.ctx;
+    var store = platform.storage || { get: function () { return undefined; }, set: function () {} };
+    var audio = platform.audio || { play: function () {}, resume: function () {} };
+
+    /* ---------- 视口：以 750 宽为设计坐标系，高度按屏幕比例伸缩 ---------- */
+    var DW = CONFIG.designWidth;
+    var DH = 1334;
+    var scale = 1;
+    function applyViewport(w, h, dpr) {
+      var cssScale = (w && w > 0) ? w / DW : 1;      // 设计单位 -> CSS 像素
+      // 浏览器 canvas 的 backing store 是 CSS 尺寸的 dpr 倍，
+      // 绘制坐标必须同步乘 dpr，否则画面只占 1/dpr（高清屏上就是左上角一小块）。
+      // 微信旧版画布不暴露 canvas 节点（platform.canvas 为 null），dprFactor 保持 1。
+      var dprFactor = (platform.canvas && dpr) ? dpr : 1;
+      scale = cssScale * dprFactor;
+      DH = (h && h > 0) ? h / cssScale : 1334;       // 设计高度仍按 CSS 比例换算
+      if (platform.canvas && dpr) {
+        platform.canvas.width = Math.round((w || DW) * dpr);
+        platform.canvas.height = Math.round((h || 1334) * dpr);
+      }
+    }
+    applyViewport(platform.width, platform.height, platform.dpr || 1);
+    if (platform.onResize) {
+      platform.onResize(function (w, h) { applyViewport(w, h, platform.dpr || 1); });
+    }
+
+    function GROUND() { return DH * 0.72; }
+    var HUMAN_X = 235, DOG_X = 505;
+
+    /* 关卡配置归一化：缺省字段补默认值 */
+    var LEVELS = CONFIG.LEVELS.map(function (lv) {
+      return {
+        name: lv.name || '关卡',
+        desc: lv.desc || '',
+        targetName: lv.targetName || CONFIG.targetName || '大黄狗',
+        time: lv.time || CONFIG.roundTime || 45,
+        hp: lv.hp || 100,
+        dodgeBase: lv.dodgeBase != null ? lv.dodgeBase : 0.08,
+        dodgeGrowth: lv.dodgeGrowth != null ? lv.dodgeGrowth : 0.02,
+        dodgeMax: lv.dodgeMax != null ? lv.dodgeMax : 0.3,
+        koBonus: lv.koBonus != null ? lv.koBonus : CONFIG.koBonus,
+        koGoal: lv.koGoal || 0,
+        mechanic: lv.mechanic || null,
+        mechanicTip: lv.mechanicTip || ''
+      };
+    });
+    function L() { return LEVELS[clamp(S.level, 0, LEVELS.length - 1)]; }
+
+    /* ---------- 图片素材路径与加载状态 ----------
+     * 微信旧版画布不支持 drawImage，图片一律走 WXML 图片层（背景层 + 立绘层），
+     * 由页面把加载状态回填到 platform.bgLayer / debug.portraitReady()；
+     * 浏览器 canvas 支持 drawImage，走 platform.loadImage + canDrawImage 通道。
+     * 任何一层加载失败，core 自动回退代码绘制，游戏不瞎。 */
+    var portraitOk = [];   // 每关立绘是否就绪（页面 image onload/onerror 回填）
+    function portraitReady(i, ok) {
+      portraitOk[i] = !!ok;
+    }
+    function portraitUsable(i) {
+      var entry = (CONFIG.assets && CONFIG.assets.levels) ? CONFIG.assets.levels[i] : null;
+      // 浏览器通道：本地 drawImage
+      if (platform.canDrawImage && platform.getImage && entry) {
+        var img = platform.getImage(entry.src);
+        if (img) return { img: img, w: entry.w, h: entry.h };
+      }
+      // 微信通道：WXML 立绘层
+      if (platform.portraitLayer && portraitOk[i] && entry) return { layer: true, w: entry.w, h: entry.h };
+      return null;
+    }
+    /* 关卡短名：取「·」后半段；名字里没有「·」时用全名，防止改名崩渲染 */
+    function shortName(lv) {
+      var n = (lv && lv.name) || '关卡';
+      var parts = n.split('·');
+      return parts.length > 1 ? parts.slice(1).join('·').trim() : n;
+    }
+
+    /* ---------- 游戏状态 ---------- */
+    var S = {
+      scene: 'menu',          // menu | levelIntro | play | levelClear | finalResult
+      level: 0,               // 当前关卡索引（0 起）
+      score: 0,               // 本关得分
+      totalScore: 0,          // 三关累计总分
+      levelScores: [],        // 每关得分快照
+      levelStats: [],         // 每关 {ko, maxCombo, goalDone}
+      best: Number(store.get('baojidog_best', 0)) || 0,
+      newBest: false,
+      timeLeft: LEVELS[0].time,
+      koCount: 0,
+      maxCombo: 0,
+      combo: 0,
+      lastHitAt: -1e9,
+      shake: 0,
+      flash: 0,
+      hitStop: 0,
+      banner: null,           // { text, color, at, dur }
+      floaters: [],
+      particles: [],
+      lastTickSec: -1,
+      paused: false,
+      now: 0,
+      earlyBonus: 0,          // 提前通关奖励分
+      goalDone: false,        // 本关是否达成 KO 目标
+      finalReason: '',        // 最后一关结束原因（通关/时间到）
+      achievements: { dogmaster: !!store.get('baojidog_ach_dogmaster', false) },  // 已获得成就
+      achUnlocked: null       // 本局刚解锁的成就 key（用于结算徽章高亮）
+    };
+
+    /* ---------- 实体 ---------- */
+    // 玩家：人类球员（左侧，出脚方）
+    var human = { x: HUMAN_X, phase: 'idle', phaseT: 0, phaseAt: 0, connectDone: true };
+    // 目标：大黄狗（右侧，被踢方）
+    var dog = {
+      x: DOG_X, hp: LEVELS[0].hp, maxHp: LEVELS[0].hp,
+      phase: 'idle', phaseT: 0, phaseAt: 0,
+      knock: 0, flash: 0, nextDodgeAt: 0, bob: Math.random() * 6.28,
+      sway: 0,               // 横跳偏移（sway 机制）
+      rage: null,            // 反扑状态：{ phase:'tell'|'bite', phaseT, phaseAt }
+      nextRageAt: 0
+    };
+
+    var HUMAN_PHASE = {
+      windup:  { dur: 90,  next: 'kick' },
+      kick:    { dur: 240, next: 'recover' },
+      recover: { dur: 200, next: 'idle' },
+      cheer:   { dur: 900, next: 'idle' }
+    };
+    var DOG_PHASE = {
+      tell:     { dur: 260,  next: 'dodge' },
+      dodge:    { dur: 340,  next: 'idle' },
+      hit:      { dur: 280,  next: 'idle' },
+      ko:       { dur: 1100, next: 'respawn' }
+    };
+    var RAGE_PHASE = {
+      tell: { dur: 520 },
+      bite: { dur: 700 }
+    };
+
+    /* ---------- 流程控制 ---------- */
+    function resetEntities() {
+      human.phase = 'idle'; human.phaseT = 0; human.phaseAt = S.now; human.connectDone = true;
+      var lv = L();
+      dog.maxHp = lv.hp; dog.hp = dog.maxHp;
+      dog.phase = 'idle'; dog.phaseT = 0; dog.phaseAt = S.now;
+      dog.knock = 0; dog.flash = 0; dog.sway = 0; dog.rage = null;
+      dog.nextDodgeAt = S.now + rand(1500, 2600);
+      dog.nextRageAt = S.now + rand(2600, 4200);
+    }
+
+    function showMenu() {
+      S.scene = 'menu';
+      S.banner = null;
+      S.paused = false;
+    }
+
+    function startLevel(i) {
+      S.level = clamp(i, 0, LEVELS.length - 1);
+      S.scene = 'levelIntro';
+      S.score = 0;
+      if (S.level === 0) {
+        // 新的一轮三关：累计分与各关记录清零
+        S.totalScore = 0;
+        S.levelScores = [];
+        S.levelStats = [];
+      }
+      S.koCount = 0;
+      S.maxCombo = 0;
+      S.combo = 0;
+      S.lastHitAt = -1e9;
+      S.earlyBonus = 0;
+      S.goalDone = false;
+      S.newBest = false;
+      S.achUnlocked = null;
+      S.banner = null;
+      S.floaters.length = 0;
+      S.particles.length = 0;
+      S.shake = 0; S.flash = 0; S.hitStop = 0;
+      S.lastTickSec = -1;
+      S.timeLeft = L().time;
+      resetEntities();
+    }
+
+    function startPlay() {
+      S.scene = 'play';
+      audio.play('start');
+    }
+
+    function endLevel(reason) {
+      // reason: 'clear'（达成 KO 目标提前通关） | 'timeup'（时间到）
+      var lv = L();
+      var early = 0;
+      if (reason === 'clear' && S.timeLeft > 0) {
+        early = Math.ceil(S.timeLeft) * CONFIG.earlyBonusPerSec;
+        S.earlyBonus = early;
+        S.score += early;
+      }
+      S.goalDone = reason === 'clear';
+      S.levelScores[S.level] = S.score;
+      S.levelStats[S.level] = { ko: S.koCount, maxCombo: S.maxCombo, goalDone: S.goalDone };
+      S.totalScore += S.score;
+      S.newBest = S.totalScore > S.best;
+      if (S.newBest) {
+        S.best = S.totalScore;
+        store.set('baojidog_best', S.best);
+      }
+      S.timeLeft = 0;
+      S.banner = null;
+      audio.play('levelclear');
+      if (S.level >= LEVELS.length - 1) {
+        // 成就：三关全部打完 → 解锁「打狗大师」（仅最后一关结束时触发）
+        if (!S.achievements.dogmaster) {
+          S.achievements.dogmaster = true;
+          S.achUnlocked = 'dogmaster';
+          store.set('baojidog_ach_dogmaster', true);
+        }
+        S.finalReason = reason;
+        S.scene = 'finalResult';
+      } else {
+        S.scene = 'levelClear';
+      }
+    }
+
+    function comboBonusOf(combo) {
+      return 1 + Math.min(Math.max(combo - 1, 0), CONFIG.comboBonusCap) * CONFIG.comboBonusPer;
+    }
+
+    /* ---------- 出脚与判定 ---------- */
+    function tryKick() {
+      if (S.scene !== 'play') return;
+      if (human.phase !== 'idle') return;   // 出脚有节奏，脚法中忽略连点
+      human.phase = 'windup';
+      human.phaseT = 0;
+      human.phaseAt = S.now;
+      human.connectDone = false;
+    }
+
+    function doConnect() {
+      var lv = L();
+      // 反扑机制：狗子咬人时出脚 → 被反咬
+      if (dog.rage && dog.rage.phase === 'bite') {
+        S.combo = 0;
+        addFloater(dog.x, GROUND() - 360, '被反咬!', '#ff5252', 52);
+        S.shake = 16;
+        S.flash = 0.25;
+        audio.play('counter');
+        return;
+      }
+      var dodging = dog.phase === 'tell' || dog.phase === 'dodge';
+      if (dodging) {
+        // 被闪避：断连击
+        S.combo = 0;
+        addFloater(dog.x, GROUND() - 330, '闪避!', '#cfd8dc', 42);
+        puffDust(dog.x + 30, GROUND() - 20);
+        audio.play('dodge');
+        return;
+      }
+      // 命中：结算连击 / 暴击 / 伤害
+      S.combo = (S.lastHitAt > 0 && (S.now - S.lastHitAt) <= CONFIG.comboWindow) ? S.combo + 1 : 1;
+      S.lastHitAt = S.now;
+      S.maxCombo = Math.max(S.maxCombo, S.combo);
+
+      var mega = Math.random() < CONFIG.megaRate;
+      var crit = !mega && Math.random() < CONFIG.critRate;
+      var mul = mega ? CONFIG.megaMul : (crit ? CONFIG.critMul : 1);
+      var dmg = Math.round(rand(CONFIG.dmgMin, CONFIG.dmgMax) * mul * comboBonusOf(S.combo));
+
+      S.score += dmg;
+      dog.hp -= dmg;
+      dog.knock = 26 + mul * 12;
+      dog.flash = 1;
+      dog.phase = 'hit'; dog.phaseT = 0; dog.phaseAt = S.now;
+
+      // 打击感：抖屏 / 白闪 / 顿帧
+      S.shake = mega ? 24 : (crit ? 14 : 8);
+      S.flash = mega ? 0.9 : (crit ? 0.5 : 0.18);
+      S.hitStop = mega ? 120 : (crit ? 80 : 50);
+      burst(mega ? 34 : (crit ? 20 : 12), mega);
+
+      if (mega) {
+        addFloater(dog.x, GROUND() - 380, '超级暴击 ' + dmg + '!', '#ff5252', 76);
+        setBanner('超级暴击 x' + CONFIG.megaMul + '!', '#ff5252');
+        audio.play('mega');
+      } else if (crit) {
+        addFloater(dog.x, GROUND() - 340, '暴击 ' + dmg, '#ffd54a', 62);
+        setBanner('暴击 x' + CONFIG.critMul, '#ffd54a');
+        audio.play('crit');
+      } else {
+        addFloater(dog.x, GROUND() - 310, '' + dmg, '#ffffff', 44);
+        audio.play('kick');
+      }
+      if (dog.hp <= 0) koDog();
+    }
+
+    function koDog() {
+      var lv = L();
+      dog.hp = 0;
+      dog.phase = 'ko'; dog.phaseT = 0; dog.phaseAt = S.now;
+      dog.rage = null;
+      S.koCount++;
+      S.score += lv.koBonus;
+      human.phase = 'cheer'; human.phaseT = 0; human.phaseAt = S.now; human.connectDone = true;
+      setBanner('KO! +' + lv.koBonus, '#7cff6b');
+      burst(40, true);
+      S.shake = 20;
+      S.flash = 0.7;
+      audio.play('ko');
+      // 达成本关 KO 目标：倒地动画结束后直接通关
+      if (lv.koGoal && S.koCount >= lv.koGoal) S.pendingEnd = 'clear';
+    }
+
+    /* ---------- 输入 ---------- */
+    function handleTap() {
+      if (audio.resume) audio.resume();
+      if (S.scene === 'menu') startLevel(0);
+      else if (S.scene === 'levelIntro') startPlay();
+      else if (S.scene === 'play') tryKick();
+      else if (S.scene === 'levelClear') startLevel(S.level + 1);
+      else if (S.scene === 'finalResult') showMenu();
+    }
+    platform.onTap(handleTap);
+    if (platform.onHide) platform.onHide(function () { S.paused = true; });
+    if (platform.onShow) platform.onShow(function () { S.paused = false; });
+
+    /* ---------- 更新 ---------- */
+    function update(dt) {
+      S.now += dt;
+      S.shake = Math.max(0, S.shake - dt * 0.035);
+      S.flash = Math.max(0, S.flash - dt * 0.004);
+      updateParticles(dt);
+      updateFloaters(dt);
+
+      // 顿帧：命中瞬间冻结世界（粒子照常，保证画面不僵）
+      if (S.hitStop > 0) {
+        S.hitStop -= dt;
+        return;
+      }
+      if (S.paused) return;
+
+      if (S.scene === 'play') {
+        S.timeLeft -= dt / 1000;
+        var sec = Math.ceil(S.timeLeft);
+        if (S.timeLeft <= 10 && sec !== S.lastTickSec && sec > 0) {
+          S.lastTickSec = sec;
+          audio.play('tick');
+        }
+        if (S.timeLeft <= 0) { endLevel('timeup'); return; }
+        if (S.combo > 0 && (S.now - S.lastHitAt) > CONFIG.comboWindow) S.combo = 0;
+        updateDogAI();
+      }
+      updateHuman(dt);
+      updateDog(dt);
+    }
+
+    function updateHuman(dt) {
+      var p = HUMAN_PHASE[human.phase];
+      if (!p) return;
+      human.phaseT = clamp((S.now - human.phaseAt) / p.dur, 0, 1);
+      if (human.phase === 'kick' && !human.connectDone && human.phaseT >= 0.42) {
+        human.connectDone = true;
+        var before = human.phase;
+        doConnect();
+        if (human.phase !== before) return; // KO 进了庆祝态，交给下一帧
+      }
+      if (human.phaseT >= 1) {
+        human.phase = p.next;
+        human.phaseT = 0;
+        human.phaseAt = S.now;
+      }
+    }
+
+    function updateDog(dt) {
+      var p = DOG_PHASE[dog.phase];
+      if (p) {
+        dog.phaseT = clamp((S.now - dog.phaseAt) / p.dur, 0, 1);
+        if (dog.phaseT >= 1) {
+          if (p.next === 'respawn') {
+            if (S.pendingEnd === 'clear') { S.pendingEnd = null; endLevel('clear'); return; }
+            dog.hp = dog.maxHp;
+            dog.phase = 'idle'; dog.phaseT = 0; dog.phaseAt = S.now;
+            dog.nextDodgeAt = S.now + rand(1200, 2400);
+            dog.nextRageAt = S.now + rand(2000, 3600);
+          } else {
+            dog.phase = p.next;
+            dog.phaseT = 0;
+            dog.phaseAt = S.now;
+          }
+        }
+      }
+      dog.knock = Math.max(0, dog.knock - dt * 0.09);
+      dog.flash = Math.max(0, dog.flash - dt * 0.005);
+      // 横跳偏移衰减回 0（sway 机制在 AI 里持续写入）
+      if (L().mechanic !== 'sway') dog.sway = Math.max(0, dog.sway - dt * 0.004);
+    }
+
+    function updateDogAI() {
+      var lv = L();
+      // 横跳机制：站位左右漂移
+      if (lv.mechanic === 'sway' && dog.phase === 'idle') {
+        dog.sway = Math.sin(S.now / 420) * 64;
+      }
+      // 闪避 AI
+      if (dog.phase === 'idle' && S.now >= dog.nextDodgeAt) {
+        var rate = Math.min(lv.dodgeBase + S.koCount * lv.dodgeGrowth, lv.dodgeMax);
+        if (Math.random() < rate) {
+          dog.phase = 'tell'; dog.phaseT = 0; dog.phaseAt = S.now;
+        } else {
+          dog.nextDodgeAt = S.now + rand(1000, 2200);
+        }
+      }
+      // 反扑机制：周期性发怒，咬人期间出脚会被反咬
+      if (lv.mechanic === 'counter' && !dog.rage && dog.phase === 'idle' && S.now >= dog.nextRageAt) {
+        dog.rage = { phase: 'tell', phaseT: 0, phaseAt: S.now };
+      }
+      if (dog.rage) {
+        var rp = RAGE_PHASE[dog.rage.phase];
+        dog.rage.phaseT = clamp((S.now - dog.rage.phaseAt) / rp.dur, 0, 1);
+        if (dog.rage.phaseT >= 1) {
+          if (dog.rage.phase === 'tell') {
+            dog.rage = { phase: 'bite', phaseT: 0, phaseAt: S.now };
+          } else {
+            dog.rage = null;
+            dog.nextRageAt = S.now + rand(2600, 4600);
+          }
+        }
+      }
+    }
+
+    /* ---------- 粒子与飘字 ---------- */
+    function burst(n, big) {
+      var colors = big
+        ? ['#ffd54a', '#ff8a65', '#ff5252', '#ffffff', '#7cff6b']
+        : ['#ffffff', '#ffd54a', '#ffe082'];
+      var gy = GROUND();
+      for (var i = 0; i < n; i++) {
+        var a = rand(0, Math.PI * 2);
+        var sp = rand(2, big ? 9 : 6);
+        S.particles.push({
+          x: dog.x + rand(-30, 30),
+          y: gy - 260 + rand(-60, 60),
+          vx: Math.cos(a) * sp,
+          vy: Math.sin(a) * sp - 2,
+          g: 0.22,
+          life: rand(400, 800),
+          age: 0,
+          size: rand(6, big ? 16 : 11),
+          color: colors[i % colors.length],
+          spin: rand(-0.3, 0.3),
+          rot: 0,
+          dust: false
+        });
+      }
+    }
+
+    function puffDust(x, y) {
+      for (var i = 0; i < 8; i++) {
+        S.particles.push({
+          x: x + rand(-16, 16),
+          y: y + rand(-8, 4),
+          vx: rand(-2.5, 2.5),
+          vy: rand(-1.5, -0.2),
+          g: 0.05,
+          life: rand(300, 500),
+          age: 0,
+          size: rand(8, 16),
+          color: 'rgba(210,205,190,0.8)',
+          spin: 0,
+          rot: 0,
+          dust: true
+        });
+      }
+    }
+
+    function updateParticles(dt) {
+      var k = dt / 16.7;
+      for (var i = S.particles.length - 1; i >= 0; i--) {
+        var p = S.particles[i];
+        p.age += dt;
+        if (p.age >= p.life) { S.particles.splice(i, 1); continue; }
+        p.x += p.vx * k;
+        p.y += p.vy * k;
+        p.vy += p.g * k;
+        p.rot += p.spin * k;
+      }
+    }
+
+    function addFloater(x, y, text, color, size) {
+      S.floaters.push({ x: x, y: y, text: text, color: color, size: size, age: 0, life: 900 });
+    }
+
+    function updateFloaters(dt) {
+      for (var i = S.floaters.length - 1; i >= 0; i--) {
+        var f = S.floaters[i];
+        f.age += dt;
+        f.y -= dt * 0.09;
+        if (f.age >= f.life) S.floaters.splice(i, 1);
+      }
+    }
+
+    function setBanner(text, color) {
+      if (!text) { S.banner = null; return; }
+      S.banner = { text: text, color: color, at: S.now, dur: 900 };
+    }
+
+    /* ================= 渲染 ================= */
+    function render() {
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      ctx.clearRect(0, 0, DW, DH);
+      if (S.shake > 0.5) {
+        ctx.translate(rand(-S.shake, S.shake) * 0.5, rand(-S.shake, S.shake) * 0.5);
+      }
+      drawBackground();
+      drawDogEntity();
+      drawHumanEntity();
+      drawParticles();
+      drawFloaters();
+      ctx.setTransform(scale, 0, 0, scale, 0, 0);
+      drawHUD();
+      drawBanner();
+      if (S.flash > 0.01) {
+        ctx.fillStyle = 'rgba(255,255,255,' + Math.min(0.85, S.flash) + ')';
+        ctx.fillRect(0, 0, DW, DH);
+      }
+      if (S.scene === 'menu') drawMenu();
+      else if (S.scene === 'levelIntro') drawLevelIntro();
+      else if (S.scene === 'levelClear') drawLevelClear();
+      else if (S.scene === 'finalResult') drawFinal();
+      if (S.paused && S.scene === 'play') drawPaused();
+    }
+
+    function drawBackground() {
+      var gy = GROUND();
+      var bgUsable = platform.bgLayer ||   // 微信：WXML 背景图层已就绪
+        (platform.canDrawImage && platform.getImage && platform.getImage(CONFIG.assets && CONFIG.assets.bg)); // 浏览器：本地 drawImage
+      if (bgUsable) {
+        // 背景由图片层提供（WXML image / 浏览器 drawImage），canvas 只加压暗增强层次
+        if (platform.canDrawImage && !platform.bgLayer) {
+          var bgImg = platform.getImage(CONFIG.assets.bg);
+          if (bgImg) ctx.drawImage(bgImg, 0, 0, DW, DH);
+        }
+        var shade = ctx.createLinearGradient(0, DH * 0.55, 0, DH);
+        shade.addColorStop(0, 'rgba(0,0,0,0)');
+        shade.addColorStop(1, 'rgba(0,0,0,0.45)');
+        ctx.fillStyle = shade;
+        ctx.fillRect(0, DH * 0.55, DW, DH * 0.45);
+        var top = ctx.createLinearGradient(0, 0, 0, DH * 0.2);
+        top.addColorStop(0, 'rgba(0,0,0,0.35)');
+        top.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = top;
+        ctx.fillRect(0, 0, DW, DH * 0.2);
+        return;
+      }
+      var g = ctx.createLinearGradient(0, 0, 0, DH);
+      g.addColorStop(0, '#8fd05a');
+      g.addColorStop(0.55, '#6fbf45');
+      g.addColorStop(1, '#57a838');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, DW, DH);
+      // 草坪条纹
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      var band = 90;
+      for (var y = 0; y < DH; y += band * 2) ctx.fillRect(0, y, DW, band);
+      // 中圈与边线
+      ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.ellipse(DW * 0.5, gy - 210, 330, 180, 0, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 8;
+      ctx.beginPath();
+      ctx.moveTo(0, gy + 2);
+      ctx.lineTo(DW, gy + 2);
+      ctx.stroke();
+      // 四角暗角
+      var v = ctx.createRadialGradient(DW / 2, DH * 0.45, DH * 0.32, DW / 2, DH * 0.5, DH * 0.78);
+      v.addColorStop(0, 'rgba(0,0,0,0)');
+      v.addColorStop(1, 'rgba(0,0,0,0.3)');
+      ctx.fillStyle = v;
+      ctx.fillRect(0, 0, DW, DH);
+    }
+
+    /* ---------- 大黄狗（被踢目标，右侧） ---------- */
+    function drawDogEntity() {
+      var gy = GROUND();
+      var d = dog;
+      var lv = L();
+      var p = d.phaseT;
+      var lean = 0, yOff = 0, xOff = d.knock + d.sway;
+
+      if (d.phase === 'idle') {
+        yOff = Math.sin(S.now / 300 + d.bob) * 5;
+        lean = Math.sin(S.now / 300 + d.bob) * 0.03;
+      } else if (d.phase === 'tell') {
+        lean = -0.1 * p;
+        yOff = -4 * p;
+      } else if (d.phase === 'dodge') {
+        xOff += 46 * Math.sin(p * Math.PI);
+        lean = -0.22 * Math.sin(p * Math.PI);
+      } else if (d.phase === 'hit') {
+        lean = 0.08;
+      }
+
+      var x = d.x + xOff;
+      var baseY = gy + yOff;
+
+      /* 立绘三通道：
+       * 1. 浏览器 canvas 支持 drawImage → 直接画立绘
+       * 2. 微信旧版画布不支持 drawImage → 立绘在 WXML 图片层，canvas 只画附属
+       * 3. 都不可用（图片加载失败/测试环境）→ 回退代码绘制 */
+      var pEnt = portraitUsable(S.level);
+      var isLayer = !!(pEnt && pEnt.layer);
+      var PW = 0, PH = 0;
+      if (pEnt) {
+        PW = 340;
+        PH = PW * pEnt.h / pEnt.w;
+      }
+      // 阴影
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.beginPath();
+      ctx.ellipse(d.x + 6, gy + 10, pEnt ? 120 : 78, pEnt ? 22 : 16, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 反扑红光
+      if (d.rage) {
+        var rageA = d.rage.phase === 'tell' ? 0.12 + 0.18 * d.rage.phaseT : 0.3;
+        ctx.save();
+        ctx.globalAlpha = rageA;
+        ctx.fillStyle = '#ff1744';
+        ctx.beginPath();
+        if (pEnt) ctx.ellipse(x, baseY - PH / 2, PW / 2 + 26, PH / 2 + 34, 0, 0, Math.PI * 2);
+        else ctx.ellipse(x, baseY - 180, 130, 210, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
+      if (pEnt && !isLayer) {
+        drawPortrait(pEnt, x, baseY, d, p, lean, PW, PH);   // 浏览器：canvas 直接画
+      } else if (isLayer) {
+        // 微信：立绘本体在 WXML 图片层，这里只画附属效果
+      } else {
+      ctx.save();
+      ctx.translate(x, baseY);
+      if (d.phase === 'ko') {
+        var k = clamp(p * 1.6, 0, 1);
+        ctx.rotate(1.35 * k);
+      } else {
+        ctx.rotate(lean);
+      }
+
+      var FUR = '#f5b93c', FUR_D = '#e09a24', FUR_L = '#ffd98a', LINE = '#7a4d12';
+
+      // 尾巴（发怒时快速摆动）
+      var wagSpeed = d.rage ? 55 : (d.phase === 'dodge' ? 90 : 130);
+      var wag = Math.sin(S.now / wagSpeed) * (d.rage ? 22 : 12);
+      ctx.strokeStyle = FUR_D;
+      ctx.lineWidth = 16;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-50, -6);
+      ctx.quadraticCurveTo(-88, -34 + wag, -104, -66 + wag * 1.6);
+      ctx.stroke();
+      ctx.fillStyle = FUR_L;
+      ctx.beginPath();
+      ctx.arc(-104, -66 + wag * 1.6, 9, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 四条腿（KO 时趴伏）
+      ctx.strokeStyle = FUR_D;
+      ctx.lineWidth = 16;
+      legLine(-30, 26, -32, d.phase === 'ko' ? -20 : 96);
+      legLine(26, 26, 30, d.phase === 'ko' ? -20 : 96);
+      ctx.strokeStyle = FUR;
+      ctx.lineWidth = 18;
+      legLine(18, 28, 24, d.phase === 'ko' ? -26 : 94);
+
+      // 身体
+      ctx.fillStyle = FUR;
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.ellipse(0, 4, 58, 40, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 肚皮
+      ctx.fillStyle = FUR_L;
+      ctx.beginPath();
+      ctx.ellipse(8, 18, 34, 22, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 红领巾
+      ctx.fillStyle = '#e5484d';
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(26, -34);
+      ctx.lineTo(62, -6);
+      ctx.lineTo(26, 16);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // 耳朵（预警/发怒时竖起）
+      ctx.save();
+      ctx.translate(34, -76);
+      var earRot = d.rage ? -0.55 : (d.phase === 'tell' ? -0.45 + 0.1 * (1 - p) : -0.3 + wag * 0.012);
+      ctx.rotate(earRot);
+      ctx.fillStyle = FUR_D;
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 15, 30, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+
+      // 头
+      ctx.fillStyle = FUR;
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 5;
+      ctx.beginPath();
+      ctx.arc(58, -46, 42, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // 口鼻
+      ctx.fillStyle = FUR_L;
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.ellipse(94, -28, 25, 17, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = '#3b2a16';
+      ctx.beginPath();
+      ctx.arc(110, -34, 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 眼睛
+      ctx.strokeStyle = '#3b2a16';
+      ctx.lineWidth = 5;
+      ctx.lineCap = 'round';
+      if (d.phase === 'hit' || d.phase === 'ko') {
+        // X 眼（挨打/倒地）
+        [-8, 22].forEach(function (ex) {
+          ctx.beginPath();
+          ctx.moveTo(ex - 7, -53);
+          ctx.lineTo(ex + 7, -39);
+          ctx.moveTo(ex + 7, -53);
+          ctx.lineTo(ex - 7, -39);
+          ctx.stroke();
+        });
+      } else if (d.rage) {
+        // 怒目 ">"
+        ctx.beginPath();
+        ctx.moveTo(64, -66);
+        ctx.lineTo(76, -58);
+        ctx.lineTo(64, -50);
+        ctx.stroke();
+      } else if (d.phase === 'tell' || d.phase === 'dodge') {
+        // 自信 "^" 眼
+        ctx.beginPath();
+        ctx.arc(72, -56, 10, Math.PI * 1.15, Math.PI * 1.85);
+        ctx.stroke();
+      } else {
+        // 微笑眼
+        ctx.beginPath();
+        ctx.arc(72, -58, 10, Math.PI * 0.15, Math.PI * 0.85);
+        ctx.stroke();
+      }
+
+      // 嘴
+      if (d.rage && d.rage.phase === 'bite') {
+        // 龇牙
+        ctx.fillStyle = '#7b3b2e';
+        ctx.beginPath();
+        ctx.ellipse(96, -14, 15, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        for (var ti = -1; ti <= 1; ti++) {
+          ctx.beginPath();
+          ctx.moveTo(96 + ti * 9 - 4, -20);
+          ctx.lineTo(96 + ti * 9 + 4, -20);
+          ctx.lineTo(96 + ti * 9, -12);
+          ctx.closePath();
+          ctx.fill();
+        }
+      } else if (d.phase === 'hit' || d.phase === 'ko') {
+        ctx.fillStyle = '#7b3b2e';
+        ctx.beginPath();
+        ctx.ellipse(96, -14, 13, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ff7b8a';
+        ctx.beginPath();
+        ctx.ellipse(96, -6, 8, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (d.phase === 'dodge' || d.phase === 'tell') {
+        ctx.strokeStyle = '#3b2a16';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(84, -18);
+        ctx.quadraticCurveTo(96, -8, 108, -20);
+        ctx.stroke();
+      } else {
+        ctx.strokeStyle = '#3b2a16';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(92, -18, 10, Math.PI * 0.1, Math.PI * 0.9);
+        ctx.stroke();
+      }
+
+      // 腮红
+      ctx.fillStyle = 'rgba(255,120,120,0.35)';
+      ctx.beginPath();
+      ctx.arc(48, -34, 8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+      }
+
+      // 受击白闪（layer 模式由 WXML 闪白层负责，canvas 不画）
+      if (!isLayer && d.flash > 0.02) {
+        ctx.save();
+        ctx.globalAlpha = clamp(d.flash, 0, 1) * 0.5;
+        ctx.fillStyle = '#ffffff';
+        if (pEnt) {
+          roundRectPath(ctx, x - PW / 2, baseY - PH, PW, PH, 24);
+        } else {
+          roundRectPath(ctx, x - 62, baseY - 400, 124, 400, 36);
+        }
+        ctx.fill();
+        ctx.restore();
+      }
+
+      // 闪避预警 "!" / 反扑预警 "!"
+      if (d.phase === 'tell' || (d.rage && d.rage.phase === 'tell')) {
+        var isRage = !!(d.rage && d.rage.phase === 'tell');
+        var pk = easeOutBack(clamp((isRage ? d.rage.phaseT : p) * 1.4, 0, 1));
+        ctx.save();
+        ctx.translate(x, baseY - (pEnt ? PH + 60 : 440));
+        ctx.scale(pk, pk);
+        ctx.font = 'bold 64px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.lineWidth = 8;
+        ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+        ctx.strokeText('!', 0, 0);
+        ctx.fillStyle = isRage ? '#ff5252' : '#ffd54a';
+        ctx.fillText('!', 0, 0);
+        ctx.restore();
+      }
+      // KO 转圈星星
+      if (d.phase === 'ko') {
+        for (var i = 0; i < 3; i++) {
+          var a = S.now / 130 + (i * Math.PI * 2) / 3;
+          drawSpark(x + Math.cos(a) * 46, baseY - 330 + Math.sin(a) * 14, 12, a, '#ffd54a', 0.95);
+        }
+      }
+      // 体力条（挂在目标头上方，跟随横跳/击退偏移）
+      if (S.scene === 'play' && d.phase !== 'ko') {
+        var bw = 180, bh = 18, bx = x - bw / 2, by = baseY - (pEnt ? PH + 90 : 505);
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        roundRectPath(ctx, bx - 3, by - 3, bw + 6, bh + 6, 11);
+        ctx.fill();
+        var hpr = clamp(d.hp / d.maxHp, 0, 1);
+        ctx.fillStyle = hpr > 0.5 ? '#8bc34a' : (hpr > 0.25 ? '#ffb300' : '#ff5252');
+        roundRectPath(ctx, bx, by, Math.max(8, bw * hpr), bh, 9);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(lv.targetName + ' ' + Math.max(0, Math.ceil(d.hp)), x, by - 10);
+      }
+
+      function legLine(x1, y1, x2, y2) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+    }
+
+    /* ---------- 目标立绘（三关角色图片，带动画与受击反馈） ---------- */
+    function drawPortrait(portrait, x, baseY, d, p, lean, PW, PH) {
+      var bob = d.phase === 'idle' ? Math.sin(S.now / 300 + d.bob) * 5 : 0;
+      ctx.save();
+      ctx.translate(x, baseY + bob);
+      if (d.phase === 'ko') {
+        ctx.rotate(1.35 * clamp(p * 1.6, 0, 1));   // 倒地：绕脚边旋转
+      } else {
+        ctx.rotate(lean);
+      }
+      ctx.drawImage(portrait.img, -PW / 2, -PH, PW, PH);
+      ctx.restore();
+    }
+
+    /* ---------- 人类球员（玩家操控，左侧出脚方） ---------- */
+    function drawHumanEntity() {
+      var gy = GROUND();
+      var h = human;
+      var crouch = 0, lunge = 0, ext = 0, tilt = 0;
+
+      if (h.phase === 'windup') {
+        crouch = h.phaseT;
+        tilt = -0.07 * h.phaseT;
+      } else if (h.phase === 'kick') {
+        var p = h.phaseT;
+        lunge = p < 0.55 ? p / 0.55 : 1 - (p - 0.55) / 0.45 * 0.35;
+        ext = p < 0.35 ? p / 0.35 : (p < 0.7 ? 1 : 1 - (p - 0.7) / 0.3);
+        tilt = 0.12 * ext;
+      } else if (h.phase === 'recover') {
+        lunge = 0.65 * (1 - h.phaseT);
+        crouch = 0.3 * (1 - h.phaseT);
+      }
+
+      var bob = h.phase === 'idle' ? Math.sin(S.now / 260) * 6 : 0;
+      var hop = h.phase === 'cheer' ? -Math.abs(Math.sin(S.now / 110)) * 30 : 0;
+      var x = h.x + lunge * 150;
+      var y = gy + bob + hop;
+
+      // 阴影
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.beginPath();
+      ctx.ellipse(x, gy + 8, 80, 17, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(tilt);
+
+      var SKIN = '#f2c49b', LINE = '#1b2a4a';
+
+      // 腿（远）
+      ctx.strokeStyle = SKIN;
+      ctx.lineWidth = 15;
+      ctx.lineCap = 'round';
+      leg(12, -95, 14, -38);
+      ctx.strokeStyle = '#f5f5f5';
+      ctx.lineWidth = 18;
+      leg(14, -38, 12, -10);
+      ctx.fillStyle = '#263238';
+      roundRectPath(ctx, 0, -16, 30, 16, 6);
+      ctx.fill();
+
+      // 腿（近）
+      ctx.strokeStyle = SKIN;
+      ctx.lineWidth = 16;
+      leg(-12, -95, -14, -38);
+      ctx.strokeStyle = '#f5f5f5';
+      ctx.lineWidth = 19;
+      leg(-14, -38, -12, -10);
+      ctx.fillStyle = '#263238';
+      roundRectPath(ctx, -30, -16, 30, 16, 6);
+      ctx.fill();
+
+      // 球裤
+      ctx.fillStyle = '#1c2b4a';
+      roundRectPath(ctx, -42, -152, 84, 60, 16);
+      ctx.fill();
+
+      // 手臂（远/近）：庆祝时举起，出脚时前伸保持平衡
+      var armSwing = h.phase === 'kick' ? 40 : (h.phase === 'windup' ? -30 : 0);
+      var cheerLift = h.phase === 'cheer' ? 60 : 0;
+      ctx.strokeStyle = SKIN;
+      ctx.lineWidth = 13;
+      leg(36, -250, 54 + armSwing * 0.5, -196 + armSwing - cheerLift);
+      ctx.lineWidth = 14;
+      leg(-36, -250, -56 - armSwing * 0.5, -200 + armSwing - cheerLift);
+
+      // 球衣
+      ctx.fillStyle = CONFIG.jerseyMain;
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 4;
+      roundRectPath(ctx, -48, -268, 96, 122, 22);
+      ctx.fill();
+      ctx.stroke();
+      // 侧边辅色条纹
+      ctx.fillStyle = CONFIG.jerseySub;
+      roundRectPath(ctx, -48, -268, 16, 122, 8);
+      ctx.fill();
+      // 衣领
+      ctx.fillStyle = CONFIG.jerseySub;
+      roundRectPath(ctx, -16, -268, 32, 14, 7);
+      ctx.fill();
+      // 号码
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 44px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText('7', 10, -198);
+
+      // 头
+      ctx.fillStyle = SKIN;
+      ctx.strokeStyle = LINE;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.arc(0, -312, 38, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      // 耳朵
+      ctx.beginPath();
+      ctx.arc(-38, -308, 8, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(38, -308, 8, 0, Math.PI * 2);
+      ctx.fill();
+      // 头发
+      ctx.fillStyle = '#33261a';
+      ctx.beginPath();
+      ctx.arc(0, -314, 39, Math.PI, Math.PI * 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-39, -314);
+      ctx.quadraticCurveTo(-14, -340, 10, -320);
+      ctx.quadraticCurveTo(26, -310, 39, -318);
+      ctx.lineTo(39, -306);
+      ctx.lineTo(-39, -306);
+      ctx.closePath();
+      ctx.fill();
+
+      // 表情
+      var eyeY = -318;
+      if (h.phase === 'kick') {
+        // 认真眼 ">"
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(-24, eyeY - 8);
+        ctx.lineTo(-12, eyeY);
+        ctx.lineTo(-24, eyeY + 8);
+        ctx.moveTo(6, eyeY - 8);
+        ctx.lineTo(18, eyeY);
+        ctx.lineTo(6, eyeY + 8);
+        ctx.stroke();
+      } else if (h.phase === 'cheer') {
+        // 开心眼 "^"
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 4;
+        [-16, 14].forEach(function (ex) {
+          ctx.beginPath();
+          ctx.arc(ex, eyeY + 4, 8, Math.PI * 1.15, Math.PI * 1.85);
+          ctx.stroke();
+        });
+      } else {
+        ctx.fillStyle = '#222';
+        [-16, 14].forEach(function (ex) {
+          ctx.beginPath();
+          ctx.arc(ex, eyeY, 4.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#fff';
+          ctx.beginPath();
+          ctx.arc(ex + 1.5, eyeY - 1.5, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.fillStyle = '#222';
+        });
+      }
+      // 嘴
+      ctx.strokeStyle = '#8d5524';
+      ctx.lineWidth = 4;
+      if (h.phase === 'kick') {
+        ctx.fillStyle = '#7b3b2e';
+        ctx.beginPath();
+        ctx.ellipse(0, -296, 11, 9, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (h.phase === 'cheer') {
+        ctx.fillStyle = '#7b3b2e';
+        ctx.beginPath();
+        ctx.ellipse(0, -296, 12, 10, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#ff7b8a';
+        ctx.beginPath();
+        ctx.ellipse(0, -290, 7, 8, 0, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, -302, 11, Math.PI * 0.15, Math.PI * 0.85);
+        ctx.stroke();
+      }
+
+      // 出脚！近侧腿伸直飞向大黄狗（画在最上层）
+      if (ext > 0) {
+        var hx = 24, hy = 24;
+        var fx = hx + ext * 170, fy = hy - ext * 92;
+        ctx.strokeStyle = SKIN;
+        ctx.lineWidth = 20;
+        ctx.lineCap = 'round';
+        leg(hx, hy, fx, fy);
+        ctx.strokeStyle = '#f5f5f5';
+        ctx.lineWidth = 20;
+        leg(fx - 14, fy + 12, fx + 6, fy + 2);
+        ctx.fillStyle = '#263238';
+        ctx.strokeStyle = '#111';
+        ctx.lineWidth = 3;
+        roundRectPath(ctx, fx - 6, fy - 14, 34, 18, 7);
+        ctx.fill();
+        ctx.stroke();
+        // 脚背冲击波
+        ctx.strokeStyle = 'rgba(255,255,255,' + (0.5 * ext) + ')';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.arc(fx + 16, fy, 26 * ext, -0.9, 0.9);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+
+      function leg(x1, y1, x2, y2) {
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+      }
+    }
+
+    /* ---------- 粒子 / 飘字 ---------- */
+    function drawSpark(x, y, size, rot, color, alpha) {
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.rotate(rot);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(0, -size);
+      ctx.quadraticCurveTo(size * 0.22, -size * 0.22, size, 0);
+      ctx.quadraticCurveTo(size * 0.22, size * 0.22, 0, size);
+      ctx.quadraticCurveTo(-size * 0.22, size * 0.22, 0, size);
+      ctx.quadraticCurveTo(-size * 0.22, -size * 0.22, 0, size);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function drawParticles() {
+      for (var i = 0; i < S.particles.length; i++) {
+        var p = S.particles[i];
+        var alpha = 1 - p.age / p.life;
+        if (p.dust) {
+          ctx.save();
+          ctx.globalAlpha = alpha * 0.7;
+          ctx.fillStyle = p.color;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.size * (1 + (1 - alpha) * 0.6), 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        } else {
+          drawSpark(p.x, p.y, p.size, p.rot, p.color, alpha);
+        }
+      }
+    }
+
+    function drawFloaters() {
+      for (var i = 0; i < S.floaters.length; i++) {
+        var f = S.floaters[i];
+        var k = clamp(f.age / 150, 0, 1);
+        var sc = 0.3 + 0.7 * easeOutBack(k);
+        var alpha = f.age > f.life - 220 ? clamp(1 - (f.age - (f.life - 220)) / 220, 0, 1) : 1;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.translate(f.x, f.y);
+        ctx.scale(sc, sc);
+        ctx.textAlign = 'center';
+        ctx.font = 'bold ' + f.size + 'px sans-serif';
+        ctx.lineWidth = Math.max(4, f.size / 9);
+        ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+        ctx.strokeText(f.text, 0, 0);
+        ctx.fillStyle = f.color;
+        ctx.fillText(f.text, 0, 0);
+        ctx.restore();
+      }
+    }
+
+    /* ---------- HUD / 横幅 / 场景 ---------- */
+    function drawHUD() {
+      // 得分
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      roundRectPath(ctx, 24, 28, 300, 96, 20);
+      ctx.fill();
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = '#b9f6ca';
+      ctx.font = '24px sans-serif';
+      ctx.fillText('得分', 44, 62);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 52px sans-serif';
+      ctx.fillText('' + S.score, 44, 108);
+
+      // 最高分
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      roundRectPath(ctx, DW - 264, 28, 240, 96, 20);
+      ctx.fill();
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#b9f6ca';
+      ctx.font = '24px sans-serif';
+      ctx.fillText('最高', DW - 44, 62);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 52px sans-serif';
+      ctx.fillText('' + S.best, DW - 44, 108);
+
+      // 关卡标识
+      var lv = L();
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      roundRectPath(ctx, DW / 2 - 170, 30, 340, 52, 26);
+      ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffe082';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.fillText('第 ' + (S.level + 1) + ' 关 / ' + LEVELS.length + ' · ' + shortName(lv), DW / 2, 65);
+
+      if (S.scene === 'play') {
+        // 计时条
+        var barW = 380, barX = (DW - barW) / 2, barY = 132;
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        roundRectPath(ctx, barX, barY, barW, 24, 12);
+        ctx.fill();
+        var pr = clamp(S.timeLeft / lv.time, 0, 1);
+        var col = S.timeLeft <= 10
+          ? (Math.sin(S.now / 120) > 0 ? '#ff5252' : '#ff8a80')
+          : '#8bc34a';
+        ctx.fillStyle = col;
+        roundRectPath(ctx, barX, barY, Math.max(24, barW * pr), 24, 12);
+        ctx.fill();
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.fillText(Math.ceil(Math.max(0, S.timeLeft)) + 's', barX + barW + 14, barY + 22);
+
+        // KO 目标进度
+        if (lv.koGoal) {
+          ctx.textAlign = 'center';
+          ctx.font = '22px sans-serif';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText('KO 目标 ' + Math.min(S.koCount, lv.koGoal) + ' / ' + lv.koGoal, DW / 2, barY + 52);
+        }
+
+        // 连击
+        if (S.combo >= 2) {
+          ctx.textAlign = 'center';
+          ctx.font = 'bold 46px sans-serif';
+          ctx.lineWidth = 8;
+          ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+          ctx.strokeText(S.combo + ' 连击', DW / 2, 226);
+          ctx.fillStyle = '#ffd54a';
+          ctx.fillText(S.combo + ' 连击', DW / 2, 226);
+          ctx.font = '22px sans-serif';
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText('伤害 +' + Math.round((comboBonusOf(S.combo) - 1) * 100) + '%', DW / 2, 258);
+        }
+      }
+    }
+
+    function drawBanner() {
+      var b = S.banner;
+      if (!b) return;
+      var age = S.now - b.at;
+      if (age > b.dur) { S.banner = null; return; }
+      var sc = easeOutBack(clamp(age / 160, 0, 1));
+      var alpha = age > b.dur - 250 ? clamp(1 - (age - (b.dur - 250)) / 250, 0, 1) : 1;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(DW / 2, DH * 0.3);
+      ctx.scale(sc, sc);
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 72px sans-serif';
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+      ctx.strokeText(b.text, 0, 0);
+      ctx.fillStyle = b.color;
+      ctx.fillText(b.text, 0, 0);
+      ctx.restore();
+    }
+
+    /* ---------- 覆盖层通用 ---------- */
+    function overlayBg(alpha) {
+      ctx.fillStyle = 'rgba(12,24,14,' + alpha + ')';
+      ctx.fillRect(0, 0, DW, DH);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'alphabetic';
+    }
+    function ctaText(y, text) {
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(S.now / 300);
+      ctx.font = 'bold 42px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, DW / 2, y);
+      ctx.globalAlpha = 1;
+    }
+    function drawCompliance(y) {
+      ctx.font = '20px sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.55)';
+      ctx.fillText('抵制不良游戏，拒绝盗版游戏。注意自我保护，谨防受骗。', DW / 2, y);
+      ctx.fillText('适度游戏益脑，沉迷游戏伤身。合理安排时间，享受健康生活。', DW / 2, y + 30);
+      ctx.fillText('适龄提示：8+  游戏角色仅供娱乐，请勿模仿', DW / 2, y + 60);
+    }
+
+    function drawMenu() {
+      overlayBg(0.62);
+      // 标题
+      ctx.save();
+      ctx.translate(DW / 2, DH * 0.2);
+      ctx.rotate(Math.sin(S.now / 300) * 0.03);
+      ctx.font = 'bold 92px sans-serif';
+      ctx.lineWidth = 14;
+      ctx.strokeStyle = '#5d3a00';
+      ctx.strokeText('暴击大黄狗', 0, 0);
+      var tg = ctx.createLinearGradient(0, -70, 0, 20);
+      tg.addColorStop(0, '#ffe082');
+      tg.addColorStop(1, '#ffb300');
+      ctx.fillStyle = tg;
+      ctx.fillText('暴击大黄狗', 0, 0);
+      ctx.restore();
+
+      ctx.font = '30px sans-serif';
+      ctx.fillStyle = '#e8f5e9';
+      ctx.fillText('操控球员，飞踹三关狗仔！', DW / 2, DH * 0.2 + 64);
+      ctx.font = '28px sans-serif';
+      ctx.fillStyle = '#b9f6ca';
+      ctx.fillText('历史最高：' + S.best, DW / 2, DH * 0.2 + 112);
+
+      // 成就徽章（已解锁常亮，未解锁置灰）
+      var ach = CONFIG.achievements.dogmaster;
+      var achGot = S.achievements.dogmaster;
+      var badgeW = 300, badgeH = 64, badgeX = DW / 2 - badgeW / 2, badgeY = DH * 0.2 + 132;
+      ctx.fillStyle = achGot ? 'rgba(255,213,74,0.18)' : 'rgba(255,255,255,0.06)';
+      roundRectPath(ctx, badgeX, badgeY, badgeW, badgeH, 32);
+      ctx.fill();
+      ctx.strokeStyle = achGot ? 'rgba(255,213,74,0.8)' : 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 26px sans-serif';
+      ctx.fillStyle = achGot ? '#ffd54a' : 'rgba(255,255,255,0.35)';
+      ctx.fillText((achGot ? '🏆 ' : '🔒 ') + ach.name + (achGot ? ' 已获得' : ' 未解锁'), DW / 2, badgeY + 42);
+      ctx.font = '18px sans-serif';
+      ctx.fillStyle = achGot ? 'rgba(255,255,255,0.75)' : 'rgba(255,255,255,0.25)';
+      ctx.fillText(ach.desc, DW / 2, badgeY + 22);
+
+      // 三关卡片
+      var cardY = DH * 0.37, cardH = 88, gap = 12;
+      LEVELS.forEach(function (lv, i) {
+        var cy = cardY + i * (cardH + gap);
+        ctx.fillStyle = 'rgba(255,255,255,0.12)';
+        roundRectPath(ctx, 95, cy, DW - 190, cardH, 20);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#ffe082';
+        ctx.font = 'bold 28px sans-serif';
+        ctx.fillText(lv.name, 125, cy + 36);
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.font = '22px sans-serif';
+        ctx.fillText(lv.desc, 125, cy + 68);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#b9f6ca';
+        ctx.font = '22px sans-serif';
+        var meta = lv.time + '秒';
+        if (lv.koGoal) meta += ' · KO×' + lv.koGoal;
+        ctx.fillText(meta, DW - 125, cy + 52);
+      });
+
+      ctaText(DH * 0.37 + 3 * (cardH + gap) + 56, '点击屏幕  开始游戏');
+
+      ctx.font = '24px sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.85)';
+      ctx.fillText('点击出脚 · 连击提升伤害 · 狗仔会闪避', DW / 2, DH * 0.82);
+      ctx.fillText('三关连打拿「打狗大师」，把截图甩群里比个分', DW / 2, DH * 0.82 + 38);
+      drawCompliance(DH * 0.92);
+    }
+
+    function drawLevelIntro() {
+      var lv = L();
+      overlayBg(0.68);
+      ctx.textAlign = 'center';
+
+      ctx.fillStyle = '#ffe082';
+      ctx.font = 'bold 30px sans-serif';
+      ctx.fillText('第 ' + (S.level + 1) + ' 关 / ' + LEVELS.length, DW / 2, DH * 0.22);
+
+      ctx.font = 'bold 76px sans-serif';
+      ctx.lineWidth = 12;
+      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+      ctx.strokeText(shortName(lv), DW / 2, DH * 0.3);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(shortName(lv), DW / 2, DH * 0.3);
+
+      ctx.font = '28px sans-serif';
+      ctx.fillStyle = '#e8f5e9';
+      ctx.fillText(lv.desc, DW / 2, DH * 0.3 + 70);
+
+      // 参数卡
+      var px = 110, py = DH * 0.38, pw = DW - 220, ph = 240;
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      roundRectPath(ctx, px, py, pw, ph, 26);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      var rows = [
+        ['限时', lv.time + ' 秒'],
+        ['大黄狗体力', lv.hp + ''],
+        ['闪避率', Math.round(lv.dodgeBase * 100) + '%'],
+        ['KO 奖励', '+' + lv.koBonus + ' 分']
+      ];
+      if (lv.koGoal) rows.push(['通关目标', 'KO ' + lv.koGoal + ' 次']);
+      rows.forEach(function (r, i) {
+        var ry = py + 56 + i * 42;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        ctx.font = '24px sans-serif';
+        ctx.fillText(r[0], px + 40, ry);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.fillText(r[1], px + pw - 40, ry);
+      });
+
+      if (lv.mechanicTip) {
+        ctx.textAlign = 'center';
+        ctx.fillStyle = '#ff8a80';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.fillText('⚠ ' + lv.mechanicTip, DW / 2, py + ph + 60);
+      }
+
+      ctaText(DH * 0.78, '点击屏幕  开始本关');
+      drawCompliance(DH * 0.90);
+    }
+
+    function drawLevelClear() {
+      var lv = LEVELS[S.level];
+      var st = S.levelStats[S.level] || { ko: 0, maxCombo: 0, goalDone: false };
+      overlayBg(0.68);
+      ctx.textAlign = 'center';
+
+      ctx.font = 'bold 64px sans-serif';
+      ctx.fillStyle = st.goalDone ? '#7cff6b' : '#ffd54a';
+      ctx.fillText(st.goalDone ? '过关！' : '时间到！', DW / 2, DH * 0.2);
+      ctx.font = '26px sans-serif';
+      ctx.fillStyle = '#e8f5e9';
+      ctx.fillText('第 ' + (S.level + 1) + ' 关 · ' + shortName(lv) +
+        (st.goalDone ? ' 目标达成' : ' 未达成 KO 目标'), DW / 2, DH * 0.2 + 50);
+
+      var px = 95, py = DH * 0.27, pw = DW - 190, ph = 430;
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      roundRectPath(ctx, px, py, pw, ph, 28);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      ctx.font = '26px sans-serif';
+      ctx.fillStyle = '#b9f6ca';
+      ctx.fillText('本关得分', DW / 2, py + 62);
+      ctx.font = 'bold 92px sans-serif';
+      ctx.fillStyle = '#ffd54a';
+      ctx.fillText('' + S.score, DW / 2, py + 152);
+
+      ctx.font = '26px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      var ly = py + 212;
+      ctx.fillText('KO ' + st.ko + ' 次 · 最高 ' + st.maxCombo + ' 连击', DW / 2, ly);
+      if (S.earlyBonus > 0) {
+        ctx.fillStyle = '#7cff6b';
+        ctx.fillText('提前通关奖励 +' + S.earlyBonus, DW / 2, ly + 40);
+      }
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('累计总分：' + S.totalScore, DW / 2, ly + 80);
+
+      var nextLv = LEVELS[S.level + 1];
+      ctaText(py + ph + 70, '点击进入  第 ' + (S.level + 2) + ' 关 · ' + shortName(nextLv));
+      drawCompliance(DH * 0.90);
+    }
+
+    function drawFinal() {
+      overlayBg(0.7);
+      ctx.textAlign = 'center';
+
+      ctx.font = 'bold 64px sans-serif';
+      ctx.fillStyle = S.finalReason === 'clear' ? '#7cff6b' : '#ffd54a';
+      ctx.fillText(S.finalReason === 'clear' ? '全部通关！' : '游戏结束！', DW / 2, DH * 0.18);
+
+      var px = 95, py = DH * 0.23, pw = DW - 190, ph = 470;
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      roundRectPath(ctx, px, py, pw, ph, 28);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      ctx.font = '26px sans-serif';
+      ctx.fillStyle = '#b9f6ca';
+      ctx.fillText('三关总分', DW / 2, py + 58);
+      ctx.font = 'bold 96px sans-serif';
+      ctx.fillStyle = '#ffd54a';
+      ctx.fillText('' + S.totalScore, DW / 2, py + 152);
+
+      if (S.newBest) {
+        ctx.fillStyle = '#ff5252';
+        roundRectPath(ctx, DW / 2 - 90, py + 172, 180, 44, 22);
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.fillText('新纪录！', DW / 2, py + 202);
+      }
+
+      // 每关得分明细
+      var totalKo = 0, totalCombo = 0;
+      LEVELS.forEach(function (lv, i) {
+        var st = S.levelStats[i] || { ko: 0, maxCombo: 0 };
+        totalKo += st.ko;
+        totalCombo = Math.max(totalCombo, st.maxCombo);
+        var ry = py + 252 + i * 46;
+        ctx.textAlign = 'left';
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        ctx.font = '24px sans-serif';
+        ctx.fillText(lv.name, px + 44, ry);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.fillText('' + (S.levelScores[i] || 0) + ' 分', px + pw - 44, ry);
+      });
+
+      ctx.textAlign = 'center';
+      ctx.font = '24px sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.8)';
+      ctx.fillText('历史最高：' + S.best + ' · 共 KO ' + totalKo + ' 次', DW / 2, py + 252 + LEVELS.length * 46 + 40);
+
+      // 成就徽章：打狗大师（刚解锁时金色脉冲高亮）
+      var ach = CONFIG.achievements.dogmaster;
+      var justUnlocked = S.achUnlocked === 'dogmaster';
+      var pulse = justUnlocked ? 1 + 0.06 * Math.sin(S.now / 150) : 1;
+      var aw = 460, ah = 96, ax = DW / 2 - aw / 2, ay = py + ph + 8;
+      ctx.save();
+      ctx.translate(DW / 2, ay + ah / 2);
+      ctx.scale(pulse, pulse);
+      ctx.translate(-DW / 2, -(ay + ah / 2));
+      ctx.fillStyle = justUnlocked ? 'rgba(255,213,74,0.22)' : 'rgba(255,255,255,0.08)';
+      roundRectPath(ctx, ax, ay, aw, ah, 20);
+      ctx.fill();
+      ctx.strokeStyle = justUnlocked ? '#ffd54a' : 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.textAlign = 'center';
+      ctx.font = 'bold 34px sans-serif';
+      ctx.fillStyle = justUnlocked ? '#ffd54a' : 'rgba(255,255,255,0.5)';
+      ctx.fillText('🏆 ' + ach.name, DW / 2, ay + 42);
+      ctx.font = '20px sans-serif';
+      ctx.fillStyle = justUnlocked ? '#ffffff' : 'rgba(255,255,255,0.35)';
+      ctx.fillText(justUnlocked ? '成就解锁！' + ach.desc : '已获得该成就', DW / 2, ay + 72);
+      ctx.restore();
+
+      ctaText(py + ph + 136, '点击屏幕  返回菜单');
+      drawCompliance(DH * 0.93);
+    }
+
+    function drawPaused() {
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(0, 0, DW, DH);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffffff';
+      ctx.font = 'bold 44px sans-serif';
+      ctx.fillText('游戏已暂停', DW / 2, DH / 2);
+      ctx.font = '24px sans-serif';
+      ctx.fillText('回到微信自动继续', DW / 2, DH / 2 + 46);
+    }
+
+    /* ---------- 主循环（兼容没有 rAF 的运行时，退化为 setTimeout） ---------- */
+    var rafId = 0;
+    var lastT = 0;
+    var frameErrors = 0;
+    var rafFn = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame
+      : function (cb) { return setTimeout(function () { cb(Date.now()); }, 16); };
+    var cafFn = (typeof cancelAnimationFrame === 'function')
+      ? cancelAnimationFrame
+      : function (id) { if (id) clearTimeout(id); };
+    function frame(t) {
+      var now = typeof t === 'number' ? t : (platform.now ? platform.now() : Date.now());
+      if (!lastT) lastT = now;
+      var dt = now - lastT;
+      lastT = now;
+      if (dt > 60) dt = 60;
+      if (dt < 0) dt = 0;
+      try {
+        update(dt);
+        render();
+        if (platform.flush) platform.flush();   // 旧版 canvas 每帧需显式 draw 提交
+      } catch (e) {
+        // 渲染异常不再静默（静默 = 绿屏）：上报给页面显示，循环继续（瞬时错误可自愈）
+        frameErrors++;
+        if (frameErrors <= 3 && platform.onFrameError) {
+          platform.onFrameError((e && e.message) ? e.message : String(e));
+        }
+      }
+      rafId = rafFn(frame);
+    }
+    rafId = rafFn(frame);
+
+    return {
+      destroy: function () { if (rafId) cafFn(rafId); },
+      getSummary: function () {
+        return {
+          score: S.score,
+          totalScore: S.totalScore,
+          best: S.best,
+          level: S.level + 1,
+          levelCount: LEVELS.length,
+          levelName: L().name,
+          koCount: S.koCount,
+          maxCombo: S.maxCombo,
+          achievements: {
+            dogmaster: S.achievements.dogmaster,
+            justUnlocked: S.achUnlocked === 'dogmaster'
+          }
+        };
+      },
+      debug: {
+        S: S, human: human, dog: dog, levels: LEVELS,
+        tap: handleTap, startLevel: startLevel, showMenu: showMenu,
+        portraitReady: portraitReady,      // 页面图片 onload/onerror 时回填
+        portraitOk: portraitOk
+      }
+    };
+  }
+
+  return { launch: launch, CONFIG: CONFIG };
+});
+
+</script>
+<script>
+
+(function () {
+  var canvas = document.getElementById('game');
+  var dbgEl = document.getElementById('dbg');
+  var showDbg = /dbg=1/.test(location.search);
+  if (showDbg) dbgEl.style.display = 'block';
+  var ctx = canvas.getContext('2d');
+
+  /* 多来源测量视口（微信 webview 的 innerWidth 常报错） */
+  function viewportSize() {
+    var doc = document.documentElement;
+    var vv = window.visualViewport || null;
+    var w = Math.max(
+      doc.clientWidth || 0,
+      window.innerWidth || 0,
+      vv ? Math.round(vv.width) : 0,
+      Math.round(document.body.getBoundingClientRect().width) || 0
+    );
+    var h = Math.max(
+      doc.clientHeight || 0,
+      window.innerHeight || 0,
+      vv ? Math.round(vv.height) : 0
+    );
+    if (w < 200) w = Math.round(((window.screen && window.screen.width) || 375) / (window.devicePixelRatio || 1)) || 375;
+    if (h < 300) h = Math.round(((window.screen && window.screen.height) || 667) / (window.devicePixelRatio || 1)) || 667;
+    return { w: w, h: h };
+  }
+
+  function pixelRatio(w, h) {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var maxPx = 2200000;
+    if (w * h * dpr * dpr > maxPx) dpr = Math.sqrt(maxPx / (w * h));
+    return Math.max(dpr, 0.75);
+  }
+
+  var size = viewportSize();
+  var dpr = pixelRatio(size.w, size.h);
+
+  function updateDbg() {
+    if (!showDbg) return;
+    var r = canvas.getBoundingClientRect();
+    dbgEl.textContent =
+      'win ' + window.innerWidth + 'x' + window.innerHeight +
+      ' doc ' + document.documentElement.clientWidth + 'x' + document.documentElement.clientHeight +
+      ' css ' + Math.round(r.width) + 'x' + Math.round(r.height) +
+      ' back ' + canvas.width + 'x' + canvas.height +
+      ' dpr ' + (window.devicePixelRatio || 1).toFixed(2);
+  }
+  updateDbg();
+
+  /* 图片素材：解码完成才交给 core（未完成时回退代码绘制） */
+  var imgCache = {};
+  function loadImg(src) {
+    if (!src || imgCache[src]) return;
+    var im = new Image();
+    im.src = src;
+    imgCache[src] = im;
+  }
+  loadImg(BaojiDog.CONFIG.assets.bg);
+  BaojiDog.CONFIG.assets.levels.forEach(function (e) { loadImg(e.src); });
+
+  BaojiDog.launch({
+    canvas: canvas,
+    ctx: ctx,
+    width: size.w,
+    height: size.h,
+    dpr: dpr,
+    audio: BaojiAudio.create(),
+    storage: BaojiStore,
+    canDrawImage: true,
+    getImage: function (src) {
+      var im = imgCache[src];
+      return (im && im.complete && im.naturalWidth > 0) ? im : null;
+    },
+    onTap: function (cb) {
+      function down(e) {
+        cb();
+        if (e && e.preventDefault) e.preventDefault();
+      }
+      if (window.PointerEvent) {
+        canvas.addEventListener('pointerdown', down);
+      } else {
+        canvas.addEventListener('touchstart', down, { passive: false });
+        canvas.addEventListener('mousedown', down);
+      }
+    },
+    onHide: function (cb) {
+      document.addEventListener('visibilitychange', function () { if (document.hidden) cb(); });
+    },
+    onShow: function (cb) {
+      document.addEventListener('visibilitychange', function () { if (!document.hidden) cb(); });
+    },
+    onResize: function (cb) {
+      var lw = 0, lh = 0;
+      function sync() {
+        var s = viewportSize();
+        canvas.style.width = s.w + 'px';
+        canvas.style.height = s.h + 'px';
+        if (s.w === lw && s.h === lh) { updateDbg(); return; }
+        lw = s.w; lh = s.h;
+        cb(s.w, s.h);
+        updateDbg();
+      }
+      window.addEventListener('resize', sync);
+      window.addEventListener('orientationchange', function () { setTimeout(sync, 200); });
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) setTimeout(sync, 200);
+      });
+      [0, 100, 300, 700, 1500, 3000].forEach(function (ms) { setTimeout(sync, ms); });
+      setInterval(sync, 1000);
+      sync();
+    }
+  });
+})();
+
+</script>
+</body>
+</html>
