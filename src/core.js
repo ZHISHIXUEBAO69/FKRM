@@ -129,8 +129,13 @@
     var DH = 1334;
     var scale = 1;
     function applyViewport(w, h, dpr) {
-      scale = (w && w > 0) ? w / DW : 1;
-      DH = (h && h > 0) ? h / scale : 1334;
+      var cssScale = (w && w > 0) ? w / DW : 1;      // 设计单位 -> CSS 像素
+      // 浏览器 canvas 的 backing store 是 CSS 尺寸的 dpr 倍，
+      // 绘制坐标必须同步乘 dpr，否则画面只占 1/dpr（高清屏上就是左上角一小块）。
+      // 微信旧版画布不暴露 canvas 节点（platform.canvas 为 null），dprFactor 保持 1。
+      var dprFactor = (platform.canvas && dpr) ? dpr : 1;
+      scale = cssScale * dprFactor;
+      DH = (h && h > 0) ? h / cssScale : 1334;       // 设计高度仍按 CSS 比例换算
       if (platform.canvas && dpr) {
         platform.canvas.width = Math.round((w || DW) * dpr);
         platform.canvas.height = Math.round((h || 1334) * dpr);
